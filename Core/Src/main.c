@@ -20,9 +20,10 @@
 #include "main.h"
 #include "cordic.h"
 #include "dma.h"
-#include "i2s.h"
-#include "tim.h"
 #include "gpio.h"
+#include "i2s.h"
+#include "stm32g4xx_hal_tim.h"
+#include "tim.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -36,7 +37,7 @@ typedef volatile uint8_t flag;
 typedef struct {
   volatile uint32_t accumulator;
   volatile uint32_t step;
-} oscillator;
+} oscillator_t;
 
 typedef enum { FIRST_HALF = 0, SECOND_HALF = 256 } position;
 
@@ -44,6 +45,17 @@ typedef struct {
   GPIO_TypeDef *port;
   uint16_t pin;
 } pin_t;
+
+typedef struct {
+  uint8_t state;
+  uint16_t attack;
+  uint16_t decay;
+  float sustain;
+  uint16_t release;
+  float value;
+} adsr_t;
+
+typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
 
 /* USER CODE END PTD */
 
@@ -68,6 +80,9 @@ uint16_t mainBuff[512] = {0};
 /*----------------------------flags-------------------------------------------*/
 
 flag scan = 0;
+flag adsrTick = 0;
+flag releaseFlag = 0;
+flag ledFlag = 0;
 
 /*----------------------------LUTs--------------------------------------------*/
 
@@ -93,7 +108,8 @@ uint32_t phaseTable[8][6] = {
 
 /*----------------------------random------------------------------------------*/
 
-oscillator oscillator1 = {0, 0};
+oscillator_t oscillator1 = {0, 0};
+adsr_t adsr = {ATTACK, 5000, 500, 0.5, 500, 0};
 
 uint8_t pressed[8][6] = {0};
 uint8_t prevState[8][6] = {0};
@@ -105,7 +121,14 @@ uint32_t lastKeyTime[8][6] = {0};
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
-void fillBuffer(position half) {
+void blink(void) {
+  if (ledFlag == 1) {
+    ledFlag = 0;
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
+  }
+}
+
+void fillSine(position half) {
   static int32_t inputBuffer[128] = {0};
   static int32_t outputBuffer[128] = {0};
   for (uint8_t i = 0; i < 128; i++) {
@@ -115,38 +138,103 @@ void fillBuffer(position half) {
   HAL_CORDIC_Calculate(&hcordic, inputBuffer, outputBuffer, 128, HAL_MAX_DELAY);
 
   for (uint8_t i = 0; i < 128; i++) {
-    mainBuff[(2 * i) + half] = (int16_t)(outputBuffer[i] >> 18);
-    mainBuff[(2 * i) + 1 + half] = (int16_t)(outputBuffer[i] >> 18);
+    mainBuff[(2 * i) + half] = (int16_t)(outputBuffer[i] >> 18) * adsr.value;
+    mainBuff[(2 * i) + 1 + half] =
+        (int16_t)(outputBuffer[i] >> 18) * adsr.value;
+  }
+}
+
+void fillSaw(position half) {
+  for (uint16_t i = 0; i < 128; i++) {
+    int16_t sample = (int16_t)(oscillator1.accumulator >> 18) *
+                     adsr.value; // scale to your output range
+    mainBuff[(2 * i) + half] = sample;
+    mainBuff[(2 * i) + 1 + half] = sample;
+    oscillator1.accumulator += oscillator1.step;
   }
 }
 
 void scanMatrix(void) {
+  if (scan == 1) {
+    scan = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+      for (uint8_t j = 0; j < 8; j++) {
+        HAL_GPIO_WritePin(columns[j].port, columns[j].pin, 0);
+      }
+      HAL_GPIO_WritePin(columns[i].port, columns[i].pin, 1);
 
-  for (uint8_t i = 0; i < 8; i++) {
-    for (uint8_t j = 0; j < 8; j++) {
-      HAL_GPIO_WritePin(columns[j].port, columns[j].pin, 0);
-    }
-    HAL_GPIO_WritePin(columns[i].port, columns[i].pin, 1);
+      for (uint16_t d = 0; d < 50; d++) {
+        __NOP();
+      }
 
-    for (uint16_t d = 0; d < 50; d++) {
-      __NOP();
-    }
+      for (uint8_t j = 0; j < 6; j++) {
+        pressed[i][j] = HAL_GPIO_ReadPin(rows[j].port, rows[j].pin);
 
-    for (uint8_t j = 0; j < 6; j++) {
-      pressed[i][j] = HAL_GPIO_ReadPin(rows[j].port, rows[j].pin);
+        if (pressed[i][j] != prevState[i][j]) {
+          if (HAL_GetTick() - lastKeyTime[i][j] > 20) {
+            prevState[i][j] = pressed[i][j];
+            lastKeyTime[i][j] = HAL_GetTick();
 
-      if (pressed[i][j] != prevState[i][j]) {
-        if (HAL_GetTick() - lastKeyTime[i][j] > 20) {
-          prevState[i][j] = pressed[i][j];
-          lastKeyTime[i][j] = HAL_GetTick();
-
-          if (pressed[i][j]) {
-            oscillator1.step = phaseTable[i][j];
-          } else {
-            oscillator1.step = 0;
+            if (pressed[i][j]) {
+              oscillator1.step = phaseTable[i][j];
+              adsr.value = 0;
+              adsr.state = ATTACK;
+            } else {
+              releaseFlag = 1;
+            }
           }
         }
       }
+    }
+  }
+}
+
+void adsrEnvStart(void) {
+  if (adsrTick == 1) {
+    adsrTick = 0;
+    switch (adsr.state) {
+
+    case ATTACK:
+      if (releaseFlag == 1) {
+        releaseFlag = 0;
+        adsr.state = RELEASE;
+      } else if (adsr.value <= 1) {
+        adsr.value += 0.1f / adsr.attack;
+      } else {
+        adsr.value = 1;
+        adsr.state = DECAY;
+      }
+      break;
+
+    case DECAY:
+      if (releaseFlag == 1) {
+        releaseFlag = 0;
+        adsr.state = RELEASE;
+      } else if (adsr.value >= adsr.sustain) {
+        adsr.value -= (1 - adsr.sustain) / (10 * adsr.decay);
+      } else {
+        adsr.value = adsr.sustain;
+      }
+      break;
+
+    case SUSTAIN:
+      if (releaseFlag == 1) {
+        releaseFlag = 0;
+        adsr.state = RELEASE;
+      } else {
+        adsr.value = adsr.sustain;
+      }
+      break;
+
+    case RELEASE:
+      if (adsr.value <= 0) {
+        adsr.value = 0;
+        oscillator1.step = 0;
+
+      } else {
+        adsr.value -= 0.1f / adsr.release;
+      }
+      break;
     }
   }
 }
@@ -159,11 +247,10 @@ void scanMatrix(void) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
 
   /* USER CODE BEGIN 1 */
   SystemCoreClockUpdate();
@@ -171,7 +258,8 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -191,6 +279,8 @@ int main(void)
   MX_I2S2_Init();
   MX_CORDIC_Init();
   MX_TIM4_Init();
+  MX_TIM6_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   CORDIC_ConfigTypeDef cordic;
   cordic.Function = CORDIC_FUNCTION_SINE;
@@ -203,19 +293,25 @@ int main(void)
   if (HAL_CORDIC_Configure(&hcordic, &cordic) != HAL_OK) {
     Error_Handler();
   }
+
   HAL_I2S_Transmit_DMA(&hi2s2, mainBuff, 512);
+
   HAL_TIM_Base_Start_IT(&htim4);
 
+  HAL_TIM_Base_Start_IT(&htim6);
+
+  HAL_TIM_Base_Start_IT(&htim7);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
 
-    if (scan == 1) {
-      scan = 0;
-      scanMatrix();
-    }
+    blink();
+
+    scanMatrix();
+
+    adsrEnvStart();
 
     /* USER CODE END WHILE */
 
@@ -225,21 +321,20 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -250,22 +345,20 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
     Error_Handler();
   }
 }
@@ -273,27 +366,36 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
-  fillBuffer(FIRST_HALF);
+  // fillSine(FIRST_HALF);
+  fillSaw(FIRST_HALF);
 }
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
-  fillBuffer(SECOND_HALF);
+  // fillSine(SECOND_HALF);
+  fillSaw(SECOND_HALF);
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim->Instance == TIM4) {
     scan = 1;
   }
+
+  if (htim->Instance == TIM6) {
+    adsrTick = 1;
+  }
+
+  if (htim->Instance == TIM7) {
+    ledFlag = 1;
+  }
 }
 
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -303,14 +405,13 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
