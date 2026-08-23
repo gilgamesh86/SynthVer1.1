@@ -22,7 +22,10 @@
 #include "dma.h"
 #include "gpio.h"
 #include "i2s.h"
-#include "stm32g4xx_hal_tim.h"
+#include "rng.h"
+#include "stm32g431xx.h"
+#include "stm32g4xx_hal_gpio.h"
+#include "stm32g4xx_hal_rng.h"
 #include "tim.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -39,7 +42,7 @@ typedef struct {
   volatile uint32_t step;
 } oscillator_t;
 
-typedef enum { FIRST_HALF = 0, SECOND_HALF = 256 } position;
+typedef enum { FIRST_HALF = 0, SECOND_HALF = 256 } position_t;
 
 typedef struct {
   GPIO_TypeDef *port;
@@ -83,7 +86,7 @@ flag scan = 0;
 flag adsrTick = 0;
 flag releaseFlag = 0;
 flag ledFlag = 0;
-
+flag gachaFlag = 0;
 /*----------------------------LUTs--------------------------------------------*/
 
 const pin_t rows[6] = {{GPIOA, GPIO_PIN_5}, {GPIOA, GPIO_PIN_4},
@@ -106,6 +109,45 @@ uint32_t phaseTable[8][6] = {
     {23409859, 37160835, 58989149, 93639437, 148643341, 235956596},
 };
 
+const int16_t aaaaSample[326] = {
+    510,    510,    690,    690,    888,    888,    1212,   1212,   1541,
+    1541,   1849,   1849,   2017,   2017,   2086,   2086,   1918,   1918,
+    1719,   1719,   1436,   1436,   1027,   1027,   490,    490,    -71,
+    -71,    -535,   -535,   -930,   -930,   -1392,  -1392,  -2016,  -2016,
+    -2694,  -2694,  -3331,  -3331,  -3920,  -3920,  -4525,  -4525,  -5009,
+    -5009,  -5231,  -5231,  -5121,  -5121,  -4758,  -4758,  -4292,  -4292,
+    -3787,  -3787,  -3231,  -3231,  -2583,  -2583,  -1833,  -1833,  -1011,
+    -1011,  -145,   -145,   868,    868,    2037,   2037,   3196,   3196,
+    4223,   4223,   5073,   5073,   5822,   5822,   6493,   6493,   7026,
+    7026,   7395,   7395,   7569,   7569,   7620,   7620,   7489,   7489,
+    7150,   7150,   6602,   6602,   5938,   5938,   5237,   5237,   4411,
+    4411,   3524,   3524,   2585,   2585,   1642,   1642,   702,    702,
+    -201,   -201,   -998,   -998,   -1679,  -1679,  -2261,  -2261,  -2723,
+    -2723,  -3076,  -3076,  -3341,  -3341,  -3423,  -3423,  -3311,  -3311,
+    -3010,  -3010,  -2554,  -2554,  -1992,  -1992,  -1425,  -1425,  -886,
+    -886,   -424,   -424,   -31,    -31,    349,    349,    698,    698,
+    997,    997,    1144,   1144,   1100,   1100,   848,    848,    472,
+    472,    34,     34,     -453,   -453,   -1057,  -1057,  -1822,  -1822,
+    -2706,  -2706,  -3736,  -3736,  -4916,  -4916,  -6140,  -6140,  -7263,
+    -7263,  -8228,  -8228,  -8971,  -8971,  -9619,  -9619,  -10240, -10240,
+    -10765, -10765, -11140, -11140, -11075, -11075, -10460, -10460, -9281,
+    -9281,  -7366,  -7366,  -4893,  -4893,  -2270,  -2270,  -133,   -133,
+    1072,   1072,   1772,   1772,   2713,   2713,   4424,   4424,   6866,
+    6866,   9551,   9551,   11982,  11982,  13921,  13921,  15185,  15185,
+    15317,  15317,  14234,  14234,  12693,  12693,  11558,  11558,  11130,
+    11130,  10743,  10743,  9699,   9699,   7890,   7890,   5328,   5328,
+    2591,   2591,   -89,    -89,    -2595,  -2595,  -4592,  -4592,  -6022,
+    -6022,  -7088,  -7088,  -8471,  -8471,  -10385, -10385, -12386, -12386,
+    -13848, -13848, -14484, -14484, -14268, -14268, -13383, -13383, -12084,
+    -12084, -10473, -10473, -8892,  -8892,  -7686,  -7686,  -6822,  -6822,
+    -5814,  -5814,  -4320,  -4320,  -2374,  -2374,  -392,   -392,   1295,
+    1295,   2839,   2839,   4320,   4320,   5678,   5678,   6622,   6622,
+    7000,   7000,   7171,   7171,   7306,   7306,   7278,   7278,   6921,
+    6921,   6246,   6246,   5524,   5524,   4918,   4918,   4457,   4457,
+    3964,   3964,   3315,   3315,   2574,   2574,   1870,   1870,   1360,
+    1360,   994,    994,    642,    642,    325,    325,    166,    166,
+    182,    182};
+
 /*----------------------------random------------------------------------------*/
 
 oscillator_t oscillator1 = {0, 0};
@@ -114,6 +156,8 @@ adsr_t adsr = {ATTACK, 5000, 500, 0.5, 500, 0};
 uint8_t pressed[8][6] = {0};
 uint8_t prevState[8][6] = {0};
 uint32_t lastKeyTime[8][6] = {0};
+
+uint32_t randomNumber = 0;
 
 /* USER CODE END PV */
 
@@ -128,7 +172,7 @@ void blink(void) {
   }
 }
 
-void fillSine(position half) {
+void fillSine(position_t half) {
   static int32_t inputBuffer[128] = {0};
   static int32_t outputBuffer[128] = {0};
   for (uint8_t i = 0; i < 128; i++) {
@@ -144,12 +188,22 @@ void fillSine(position half) {
   }
 }
 
-void fillSaw(position half) {
+void fillSaw(position_t half) {
   for (uint16_t i = 0; i < 128; i++) {
-    int16_t sample = (int16_t)(oscillator1.accumulator >> 18) *
-                     adsr.value; // scale to your output range
+    int16_t sample = (int16_t)(oscillator1.accumulator >> 18) * adsr.value;
     mainBuff[(2 * i) + half] = sample;
     mainBuff[(2 * i) + 1 + half] = sample;
+    oscillator1.accumulator += oscillator1.step;
+  }
+}
+
+void tetoMode(position_t half) {
+  uint8_t i2 = 0;
+  for (int i = 0; i < 128; i++) {
+    i2 = ((uint64_t)(uint32_t)oscillator1.accumulator * 163) >> 32;
+    mainBuff[(2 * i) + half] = (int16_t)(aaaaSample[2 * i2] * adsr.value);
+    mainBuff[(2 * i) + 1 + half] =
+        (int16_t)(aaaaSample[(2 * i2) + 1] * adsr.value);
     oscillator1.accumulator += oscillator1.step;
   }
 }
@@ -177,6 +231,7 @@ void scanMatrix(void) {
 
             if (pressed[i][j]) {
               oscillator1.step = phaseTable[i][j];
+              oscillator1.accumulator = 0;
               adsr.value = 0;
               adsr.state = ATTACK;
             } else {
@@ -270,7 +325,6 @@ int main(void) {
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -281,7 +335,14 @@ int main(void) {
   MX_TIM4_Init();
   MX_TIM6_Init();
   MX_TIM7_Init();
+  MX_RNG_Init();
   /* USER CODE BEGIN 2 */
+  HAL_RNG_GenerateRandomNumber(&hrng, &randomNumber);
+  if (randomNumber % 20 == 1) {
+    gachaFlag = 1;
+  } else {
+    gachaFlag = 0;
+  }
   CORDIC_ConfigTypeDef cordic;
   cordic.Function = CORDIC_FUNCTION_SINE;
   cordic.Scale = CORDIC_SCALE_0;
@@ -307,8 +368,11 @@ int main(void) {
   /* USER CODE BEGIN WHILE */
   while (1) {
 
-    blink();
-
+    if (gachaFlag == 1) {
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, 1);
+    } else {
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, 0);
+    }
     scanMatrix();
 
     adsrEnvStart();
@@ -335,15 +399,17 @@ void SystemClock_Config(void) {
   /** Initializes the RCC Oscillators according to the specified parameters
    * in the RCC_OscInitTypeDef structure.
    */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType =
+      RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_HSI48;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV4;
   RCC_OscInitStruct.PLL.PLLN = 85;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
@@ -367,12 +433,20 @@ void SystemClock_Config(void) {
 
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
   // fillSine(FIRST_HALF);
-  fillSaw(FIRST_HALF);
+  if (gachaFlag == 1) {
+    tetoMode(FIRST_HALF);
+  } else {
+    fillSaw(FIRST_HALF);
+  }
 }
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
   // fillSine(SECOND_HALF);
-  fillSaw(SECOND_HALF);
+  if (gachaFlag == 1) {
+    tetoMode(SECOND_HALF);
+  } else {
+    fillSaw(SECOND_HALF);
+  }
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
