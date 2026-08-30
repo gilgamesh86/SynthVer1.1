@@ -21,11 +21,10 @@
 #include "cordic.h"
 #include "dma.h"
 #include "gpio.h"
+#include "i2c.h"
 #include "i2s.h"
 #include "rng.h"
-#include "stm32g431xx.h"
 #include "stm32g4xx_hal_gpio.h"
-#include "stm32g4xx_hal_rng.h"
 #include "tim.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -60,6 +59,10 @@ typedef struct {
 
 typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
 
+typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
+
+typedef enum { SINE, SAW } wave_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -78,7 +81,7 @@ typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
 
 /* ---------------------------buffer------------------------------------------*/
 
-uint16_t mainBuff[512] = {0};
+volatile uint16_t mainBuff[512] = {0};
 
 /*----------------------------flags-------------------------------------------*/
 
@@ -150,7 +153,7 @@ const int16_t aaaaSample[326] = {
 
 /*----------------------------random------------------------------------------*/
 
-oscillator_t oscillator1 = {0, 0};
+oscillator_t oscillator[8] = {0};
 adsr_t adsr = {ATTACK, 5000, 500, 0.5, 500, 0};
 
 uint8_t pressed[8][6] = {0};
@@ -176,8 +179,8 @@ void fillSine(position_t half) {
   static int32_t inputBuffer[128] = {0};
   static int32_t outputBuffer[128] = {0};
   for (uint8_t i = 0; i < 128; i++) {
-    inputBuffer[i] = oscillator1.accumulator;
-    oscillator1.accumulator += oscillator1.step;
+    inputBuffer[i] = oscillator[0].accumulator;
+    oscillator[0].accumulator += oscillator[0].step;
   }
   HAL_CORDIC_Calculate(&hcordic, inputBuffer, outputBuffer, 128, HAL_MAX_DELAY);
 
@@ -190,21 +193,49 @@ void fillSine(position_t half) {
 
 void fillSaw(position_t half) {
   for (uint16_t i = 0; i < 128; i++) {
-    int16_t sample = (int16_t)(oscillator1.accumulator >> 18) * adsr.value;
+    int16_t sample = (int16_t)(oscillator[0].accumulator >> 18) * adsr.value;
     mainBuff[(2 * i) + half] = sample;
     mainBuff[(2 * i) + 1 + half] = sample;
-    oscillator1.accumulator += oscillator1.step;
+    oscillator[0].accumulator += oscillator[0].step;
+  }
+}
+
+void unisonFill(voices_t number, position_t half) {
+  float t = ((1 << number) - 1) / 2.0f;
+  if (number == ONE_VOICE) {
+    for (uint16_t i = 0; i < 128; i++) {
+      int16_t sample = (int16_t)(oscillator[0].accumulator >> 18) * adsr.value;
+      mainBuff[(2 * i) + half] = sample;
+      mainBuff[(2 * i) + 1 + half] = sample;
+      oscillator[0].accumulator += oscillator[0].step;
+    }
+  } else if (number <= EIGHT_VOICE) {
+    int32_t inputBuffer[128] = {0};
+    for (uint8_t i = 0; i < (1 << number); i++) {
+      for (uint8_t j = 0; j < 128; j++) {
+        int16_t sample = (int16_t)((oscillator[i].accumulator >> 18)) >> number;
+        inputBuffer[j] += sample;
+        if (i < t) {
+        } else {
+        }
+      }
+    }
+    for (uint8_t j = 0; j < 128; j++) {
+      mainBuff[(2 * j) + half] = inputBuffer[j];
+      mainBuff[(2 * j) + 1 + half] = inputBuffer[j];
+      inputBuffer[j] = 0;
+    }
   }
 }
 
 void tetoMode(position_t half) {
   uint8_t i2 = 0;
   for (int i = 0; i < 128; i++) {
-    i2 = ((uint64_t)(uint32_t)oscillator1.accumulator * 163) >> 32;
+    i2 = ((uint64_t)(uint32_t)oscillator[0].accumulator * 163) >> 32;
     mainBuff[(2 * i) + half] = (int16_t)(aaaaSample[2 * i2] * adsr.value);
     mainBuff[(2 * i) + 1 + half] =
         (int16_t)(aaaaSample[(2 * i2) + 1] * adsr.value);
-    oscillator1.accumulator += oscillator1.step;
+    oscillator[0].accumulator += oscillator[0].step;
   }
 }
 
@@ -230,8 +261,10 @@ void scanMatrix(void) {
             lastKeyTime[i][j] = HAL_GetTick();
 
             if (pressed[i][j]) {
-              oscillator1.step = phaseTable[i][j];
-              oscillator1.accumulator = 0;
+              oscillator[0].step = phaseTable[i][j];
+              for (int i = 0; i < 8; i++) {
+                oscillator[i].accumulator = 0;
+              }
               adsr.value = 0;
               adsr.state = ATTACK;
             } else {
@@ -284,7 +317,7 @@ void adsrEnvStart(void) {
     case RELEASE:
       if (adsr.value <= 0) {
         adsr.value = 0;
-        oscillator1.step = 0;
+        oscillator[0].step = 0;
 
       } else {
         adsr.value -= 0.1f / adsr.release;
@@ -336,6 +369,7 @@ int main(void) {
   MX_TIM6_Init();
   MX_TIM7_Init();
   MX_RNG_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   HAL_RNG_GenerateRandomNumber(&hrng, &randomNumber);
   if (randomNumber % 20 == 1) {
@@ -355,7 +389,7 @@ int main(void) {
     Error_Handler();
   }
 
-  HAL_I2S_Transmit_DMA(&hi2s2, mainBuff, 512);
+  HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t *)mainBuff, 512);
 
   HAL_TIM_Base_Start_IT(&htim4);
 
@@ -432,20 +466,20 @@ void SystemClock_Config(void) {
 /* USER CODE BEGIN 4 */
 
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
-  // fillSine(FIRST_HALF);
   if (gachaFlag == 1) {
     tetoMode(FIRST_HALF);
   } else {
-    fillSaw(FIRST_HALF);
+    // fillSaw(FIRST_HALF);
+    unisonFill(TWO_VOICE, FIRST_HALF);
   }
 }
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
-  // fillSine(SECOND_HALF);
   if (gachaFlag == 1) {
     tetoMode(SECOND_HALF);
   } else {
-    fillSaw(SECOND_HALF);
+    // fillSaw(SECOND_HALF);
+    unisonFill(TWO_VOICE, SECOND_HALF);
   }
 }
 

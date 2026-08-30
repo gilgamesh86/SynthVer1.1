@@ -16,7 +16,7 @@ set(CMAKE_C_EXTENSIONS ON)
 
 # Define the build type
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug")
+  set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 endif()
 
 # Set the project name
