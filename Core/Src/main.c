@@ -26,6 +26,8 @@
 #include "rng.h"
 #include "stm32g4xx_hal_gpio.h"
 #include "tim.h"
+#include <math.h>
+#include <stdint.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -159,6 +161,10 @@ adsr_t adsr = {ATTACK, 5000, 500, 0.5, 500, 0};
 uint8_t pressed[8][6] = {0};
 uint8_t prevState[8][6] = {0};
 uint32_t lastKeyTime[8][6] = {0};
+uint32_t baseStep = 0;
+uint8_t voiceFactor = FOUR_VOICE;
+uint8_t voiceCount = 0;
+int8_t detuneCents = 25;
 
 uint32_t randomNumber = 0;
 
@@ -201,7 +207,6 @@ void fillSaw(position_t half) {
 }
 
 void unisonFill(voices_t number, position_t half) {
-  float t = ((1 << number) - 1) / 2.0f;
   if (number == ONE_VOICE) {
     for (uint16_t i = 0; i < 128; i++) {
       int16_t sample = (int16_t)(oscillator[0].accumulator >> 18) * adsr.value;
@@ -213,16 +218,14 @@ void unisonFill(voices_t number, position_t half) {
     int32_t inputBuffer[128] = {0};
     for (uint8_t i = 0; i < (1 << number); i++) {
       for (uint8_t j = 0; j < 128; j++) {
-        int16_t sample = (int16_t)((oscillator[i].accumulator >> 18)) >> number;
-        inputBuffer[j] += sample;
-        if (i < t) {
-        } else {
-        }
+        inputBuffer[j] +=
+            (int32_t)((oscillator[i].accumulator >> 18)) * adsr.value;
+        oscillator[i].accumulator += oscillator[i].step;
       }
     }
     for (uint8_t j = 0; j < 128; j++) {
-      mainBuff[(2 * j) + half] = inputBuffer[j];
-      mainBuff[(2 * j) + 1 + half] = inputBuffer[j];
+      mainBuff[(2 * j) + half] = inputBuffer[j] >> number;
+      mainBuff[(2 * j) + 1 + half] = inputBuffer[j] >> number;
       inputBuffer[j] = 0;
     }
   }
@@ -240,6 +243,7 @@ void tetoMode(position_t half) {
 }
 
 void scanMatrix(void) {
+  voiceCount = 1 << voiceFactor;
   if (scan == 1) {
     scan = 0;
     for (uint8_t i = 0; i < 8; i++) {
@@ -261,13 +265,23 @@ void scanMatrix(void) {
             lastKeyTime[i][j] = HAL_GetTick();
 
             if (pressed[i][j]) {
-              oscillator[0].step = phaseTable[i][j];
-              for (int i = 0; i < 8; i++) {
-                oscillator[i].accumulator = 0;
+              baseStep = phaseTable[i][j];
+
+              if (voiceCount == 1) {
+                oscillator[0].step = phaseTable[i][j];
+              } else {
+                for (int8_t k = 0; k < voiceCount; k++) {
+                  float factor =
+                      (float)(2 * k - (voiceCount - 1)) / (voiceCount - 1);
+                  float detunePower =
+                      powf(2, ((float)detuneCents * factor / 1200));
+                  oscillator[k].step = baseStep * detunePower;
+                }
               }
               adsr.value = 0;
               adsr.state = ATTACK;
             } else {
+
               releaseFlag = 1;
             }
           }
@@ -317,7 +331,10 @@ void adsrEnvStart(void) {
     case RELEASE:
       if (adsr.value <= 0) {
         adsr.value = 0;
-        oscillator[0].step = 0;
+        for (uint8_t k = 0; k < 8; k++) {
+          oscillator[k].step = 0;
+          oscillator[k].accumulator = 0;
+        }
 
       } else {
         adsr.value -= 0.1f / adsr.release;
@@ -470,7 +487,7 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
     tetoMode(FIRST_HALF);
   } else {
     // fillSaw(FIRST_HALF);
-    unisonFill(TWO_VOICE, FIRST_HALF);
+    unisonFill(voiceFactor, FIRST_HALF);
   }
 }
 
@@ -479,7 +496,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     tetoMode(SECOND_HALF);
   } else {
     // fillSaw(SECOND_HALF);
-    unisonFill(TWO_VOICE, SECOND_HALF);
+    unisonFill(voiceFactor, SECOND_HALF);
   }
 }
 
