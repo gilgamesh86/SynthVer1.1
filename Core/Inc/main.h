@@ -1,21 +1,21 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.h
-  * @brief          : Header for main.c file.
-  *                   This file contains the common defines of the application.
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.h
+ * @brief          : Header for main.c file.
+ *                   This file contains the common defines of the application.
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
@@ -36,6 +36,35 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+
+typedef volatile uint8_t flag;
+
+typedef struct {
+  volatile uint32_t accumulator;
+  volatile uint32_t step;
+} oscillator_t;
+
+typedef enum { FIRST_HALF = 0, SECOND_HALF = 256 } position_t;
+
+typedef struct {
+  GPIO_TypeDef *port;
+  uint16_t pin;
+} pin_t;
+
+typedef struct {
+  uint8_t state;
+  uint16_t attack;
+  uint16_t decay;
+  float sustain;
+  uint16_t release;
+  float value;
+} adsr_t;
+
+typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
+
+typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
+
+typedef enum { SINE, SAW } wave_t;
 
 /* USER CODE END ET */
 

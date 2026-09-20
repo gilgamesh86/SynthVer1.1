@@ -24,52 +24,21 @@
 #include "i2c.h"
 #include "i2s.h"
 #include "rng.h"
+#include "stm32g4xx_hal_cordic.h"
+#include "stm32g4xx_hal_def.h"
 #include "stm32g4xx_hal_gpio.h"
 #include "tim.h"
 #include <math.h>
 #include <stdint.h>
-
 /* Private includes ----------------------------------------------------------*/
+
 /* USER CODE BEGIN Includes */
-
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-typedef volatile uint8_t flag;
-
-typedef struct {
-  volatile uint32_t accumulator;
-  volatile uint32_t step;
-} oscillator_t;
-
-typedef enum { FIRST_HALF = 0, SECOND_HALF = 256 } position_t;
-
-typedef struct {
-  GPIO_TypeDef *port;
-  uint16_t pin;
-} pin_t;
-
-typedef struct {
-  uint8_t state;
-  uint16_t attack;
-  uint16_t decay;
-  float sustain;
-  uint16_t release;
-  float value;
-} adsr_t;
-
-typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
-
-typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
-
-typedef enum { SINE, SAW } wave_t;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#include "adsr.h"
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -95,7 +64,9 @@ flag gachaFlag = 0;
 /*----------------------------LUTs--------------------------------------------*/
 
 const pin_t rows[6] = {{GPIOA, GPIO_PIN_5}, {GPIOA, GPIO_PIN_4},
+
                        {GPIOA, GPIO_PIN_3}, {GPIOA, GPIO_PIN_2},
+
                        {GPIOA, GPIO_PIN_1}, {GPIOA, GPIO_PIN_0}};
 
 const pin_t columns[8] = {{GPIOB, GPIO_PIN_10}, {GPIOB, GPIO_PIN_11},
@@ -112,6 +83,7 @@ uint32_t phaseTable[8][6] = {
     {20855814, 33106541, 52553357, 83423255, 132426162, 210213429},
     {22095965, 35075158, 55678342, 88383859, 140300631, 222713370},
     {23409859, 37160835, 58989149, 93639437, 148643341, 235956596},
+
 };
 
 const int16_t aaaaSample[326] = {
@@ -156,8 +128,8 @@ const int16_t aaaaSample[326] = {
 /*----------------------------random------------------------------------------*/
 
 oscillator_t oscillator[8] = {0};
-adsr_t adsr = {ATTACK, 5000, 500, 0.5, 500, 0};
 
+adsr_t adsr = {ATTACK, 100, 10, 1, 10, 0};
 uint8_t pressed[8][6] = {0};
 uint8_t prevState[8][6] = {0};
 uint32_t lastKeyTime[8][6] = {0};
@@ -171,7 +143,9 @@ uint32_t randomNumber = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
+
 void SystemClock_Config(void);
+
 /* USER CODE BEGIN PFP */
 
 void blink(void) {
@@ -181,19 +155,47 @@ void blink(void) {
   }
 }
 
-void fillSine(position_t half) {
-  static int32_t inputBuffer[128] = {0};
-  static int32_t outputBuffer[128] = {0};
-  for (uint8_t i = 0; i < 128; i++) {
-    inputBuffer[i] = oscillator[0].accumulator;
-    oscillator[0].accumulator += oscillator[0].step;
-  }
-  HAL_CORDIC_Calculate(&hcordic, inputBuffer, outputBuffer, 128, HAL_MAX_DELAY);
+void fillSine(voices_t number, position_t half) {
+  if (number == ONE_VOICE) {
+    int32_t inputBuffer[128] = {0};
+    int32_t outputBuffer[128] = {0};
+    for (uint8_t i = 0; i < 128; i++) {
+      inputBuffer[i] = oscillator[0].accumulator;
+      oscillator[0].accumulator += oscillator[0].step;
+    }
 
-  for (uint8_t i = 0; i < 128; i++) {
-    mainBuff[(2 * i) + half] = (int16_t)(outputBuffer[i] >> 18) * adsr.value;
-    mainBuff[(2 * i) + 1 + half] =
-        (int16_t)(outputBuffer[i] >> 18) * adsr.value;
+    HAL_CORDIC_Calculate(&hcordic, inputBuffer, outputBuffer, 128,
+                         HAL_MAX_DELAY);
+    for (uint8_t i = 0; i < 128; i++) {
+      mainBuff[(2 * i) + half] = (int16_t)(outputBuffer[i] >> 18) * adsr.value;
+      mainBuff[(2 * i) + 1 + half] =
+          (int16_t)(outputBuffer[i] >> 18) * adsr.value;
+    }
+  } else if (number <= EIGHT_VOICE) {
+    int32_t mainInputBuffer[128] = {0};
+    for (uint8_t i = 0; i < (1 << number); i++) {
+      int32_t inputBuffer[128] = {0};
+      int32_t outputBuffer[128] = {0};
+      for (uint8_t j = 0; j < 128; j++) {
+        inputBuffer[j] = oscillator[i].accumulator;
+        oscillator[i].accumulator += oscillator[i].step;
+      }
+      HAL_CORDIC_Calculate(&hcordic, inputBuffer, outputBuffer, 128,
+                           HAL_MAX_DELAY);
+      for (uint8_t k = 0; k < 128; k++) {
+        int32_t sample = outputBuffer[k] >> number;
+        mainInputBuffer[k] += sample;
+      }
+    }
+    for (uint8_t l = 0; l < 128; l++) {
+      int32_t v = (int32_t)((mainInputBuffer[l] >> 18) * adsr.value);
+      if (v > 32767)
+        v = 32767;
+      if (v < -32768)
+        v = -32768;
+      mainBuff[(2 * l) + half] = (int16_t)v;
+      mainBuff[(2 * l) + 1 + half] = (int16_t)v;
+    }
   }
 }
 
@@ -207,6 +209,7 @@ void fillSaw(position_t half) {
 }
 
 void unisonFill(voices_t number, position_t half) {
+
   if (number == ONE_VOICE) {
     for (uint16_t i = 0; i < 128; i++) {
       int16_t sample = (int16_t)(oscillator[0].accumulator >> 18) * adsr.value;
@@ -214,6 +217,7 @@ void unisonFill(voices_t number, position_t half) {
       mainBuff[(2 * i) + 1 + half] = sample;
       oscillator[0].accumulator += oscillator[0].step;
     }
+
   } else if (number <= EIGHT_VOICE) {
     int32_t inputBuffer[128] = {0};
     for (uint8_t i = 0; i < (1 << number); i++) {
@@ -230,7 +234,6 @@ void unisonFill(voices_t number, position_t half) {
     }
   }
 }
-
 void tetoMode(position_t half) {
   uint8_t i2 = 0;
   for (int i = 0; i < 128; i++) {
@@ -245,7 +248,9 @@ void tetoMode(position_t half) {
 void scanMatrix(void) {
   voiceCount = 1 << voiceFactor;
   if (scan == 1) {
+
     scan = 0;
+
     for (uint8_t i = 0; i < 8; i++) {
       for (uint8_t j = 0; j < 8; j++) {
         HAL_GPIO_WritePin(columns[j].port, columns[j].pin, 0);
@@ -253,20 +258,18 @@ void scanMatrix(void) {
       HAL_GPIO_WritePin(columns[i].port, columns[i].pin, 1);
 
       for (uint16_t d = 0; d < 50; d++) {
+
         __NOP();
       }
 
       for (uint8_t j = 0; j < 6; j++) {
         pressed[i][j] = HAL_GPIO_ReadPin(rows[j].port, rows[j].pin);
-
         if (pressed[i][j] != prevState[i][j]) {
           if (HAL_GetTick() - lastKeyTime[i][j] > 20) {
             prevState[i][j] = pressed[i][j];
             lastKeyTime[i][j] = HAL_GetTick();
-
             if (pressed[i][j]) {
               baseStep = phaseTable[i][j];
-
               if (voiceCount == 1) {
                 oscillator[0].step = phaseTable[i][j];
               } else {
@@ -281,7 +284,6 @@ void scanMatrix(void) {
               adsr.value = 0;
               adsr.state = ATTACK;
             } else {
-
               releaseFlag = 1;
             }
           }
@@ -291,62 +293,10 @@ void scanMatrix(void) {
   }
 }
 
-void adsrEnvStart(void) {
-  if (adsrTick == 1) {
-    adsrTick = 0;
-    switch (adsr.state) {
-
-    case ATTACK:
-      if (releaseFlag == 1) {
-        releaseFlag = 0;
-        adsr.state = RELEASE;
-      } else if (adsr.value <= 1) {
-        adsr.value += 0.1f / adsr.attack;
-      } else {
-        adsr.value = 1;
-        adsr.state = DECAY;
-      }
-      break;
-
-    case DECAY:
-      if (releaseFlag == 1) {
-        releaseFlag = 0;
-        adsr.state = RELEASE;
-      } else if (adsr.value >= adsr.sustain) {
-        adsr.value -= (1 - adsr.sustain) / (10 * adsr.decay);
-      } else {
-        adsr.value = adsr.sustain;
-      }
-      break;
-
-    case SUSTAIN:
-      if (releaseFlag == 1) {
-        releaseFlag = 0;
-        adsr.state = RELEASE;
-      } else {
-        adsr.value = adsr.sustain;
-      }
-      break;
-
-    case RELEASE:
-      if (adsr.value <= 0) {
-        adsr.value = 0;
-        for (uint8_t k = 0; k < 8; k++) {
-          oscillator[k].step = 0;
-          oscillator[k].accumulator = 0;
-        }
-
-      } else {
-        adsr.value -= 0.1f / adsr.release;
-      }
-      break;
-    }
-  }
-}
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
+
 /* USER CODE BEGIN 0 */
 
 /* USER CODE END 0 */
@@ -355,29 +305,38 @@ void adsrEnvStart(void) {
  * @brief  The application entry point.
  * @retval int
  */
+
 int main(void) {
 
   /* USER CODE BEGIN 1 */
+
   SystemCoreClockUpdate();
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick.
    */
+
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // enable trace
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END Init */
 
   /* Configure the system clock */
+
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
+
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_I2S2_Init();
@@ -387,13 +346,16 @@ int main(void) {
   MX_TIM7_Init();
   MX_RNG_Init();
   MX_I2C1_Init();
+
   /* USER CODE BEGIN 2 */
+
   HAL_RNG_GenerateRandomNumber(&hrng, &randomNumber);
   if (randomNumber % 20 == 1) {
     gachaFlag = 1;
   } else {
     gachaFlag = 0;
   }
+
   CORDIC_ConfigTypeDef cordic;
   cordic.Function = CORDIC_FUNCTION_SINE;
   cordic.Scale = CORDIC_SCALE_0;
@@ -402,21 +364,22 @@ int main(void) {
   cordic.Precision = CORDIC_PRECISION_6CYCLES;
   cordic.NbRead = CORDIC_NBREAD_1;
   cordic.NbWrite = CORDIC_NBWRITE_1;
+
   if (HAL_CORDIC_Configure(&hcordic, &cordic) != HAL_OK) {
     Error_Handler();
   }
 
   HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t *)mainBuff, 512);
-
   HAL_TIM_Base_Start_IT(&htim4);
-
   HAL_TIM_Base_Start_IT(&htim6);
-
   HAL_TIM_Base_Start_IT(&htim7);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
+
   /* USER CODE BEGIN WHILE */
+
   while (1) {
 
     if (gachaFlag == 1) {
@@ -424,14 +387,16 @@ int main(void) {
     } else {
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, 0);
     }
+
     scanMatrix();
 
-    adsrEnvStart();
+    adsrEnvStart(&adsrTick, &adsr, &releaseFlag, oscillator);
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
+
   /* USER CODE END 3 */
 }
 
@@ -439,17 +404,19 @@ int main(void) {
  * @brief System Clock Configuration
  * @retval None
  */
+
 void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
   /** Configure the main internal regulator output voltage
    */
+
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
 
   /** Initializes the RCC Oscillators according to the specified parameters
    * in the RCC_OscInitTypeDef structure.
    */
+
   RCC_OscInitStruct.OscillatorType =
       RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_HSI48;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
@@ -462,12 +429,14 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
    */
+
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                                 RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -482,21 +451,34 @@ void SystemClock_Config(void) {
 
 /* USER CODE BEGIN 4 */
 
+volatile uint32_t fillSineCycles = 0;
+volatile uint32_t fillSineMaxCycles = 0;
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
   if (gachaFlag == 1) {
     tetoMode(FIRST_HALF);
   } else {
+
     // fillSaw(FIRST_HALF);
-    unisonFill(voiceFactor, FIRST_HALF);
+    volatile uint32_t start = DWT->CYCCNT;
+    fillSine(voiceFactor, FIRST_HALF);
+
+    fillSineCycles = DWT->CYCCNT - start;
+    if (fillSineCycles > fillSineMaxCycles)
+      fillSineMaxCycles = fillSineCycles;
+    // unisonFill(voiceFactor, FIRST_HALF);
   }
 }
-
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
   if (gachaFlag == 1) {
     tetoMode(SECOND_HALF);
   } else {
     // fillSaw(SECOND_HALF);
-    unisonFill(voiceFactor, SECOND_HALF);
+    volatile uint32_t start = DWT->CYCCNT;
+    fillSine(voiceFactor, SECOND_HALF);
+    fillSineCycles = DWT->CYCCNT - start;
+    if (fillSineCycles > fillSineMaxCycles)
+      fillSineMaxCycles = fillSineCycles;
+    // unisonFill(voiceFactor, SECOND_HALF);
   }
 }
 
@@ -520,15 +502,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
  * @brief  This function is executed in case of error occurrence.
  * @retval None
  */
+
 void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1) {
   }
+
   /* USER CODE END Error_Handler_Debug */
 }
+
 #ifdef USE_FULL_ASSERT
+
 /**
  * @brief  Reports the name of the source file and the source line number
  *         where the assert_param error has occurred.
@@ -536,11 +522,16 @@ void Error_Handler(void) {
  * @param  line: assert_param error line source number
  * @retval None
  */
+
 void assert_failed(uint8_t *file, uint32_t line) {
+
   /* USER CODE BEGIN 6 */
+
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
      line) */
+
   /* USER CODE END 6 */
 }
+
 #endif /* USE_FULL_ASSERT */
