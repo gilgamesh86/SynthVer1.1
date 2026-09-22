@@ -64,7 +64,7 @@ typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
 
 typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
 
-typedef enum { SINE, SAW } wave_t;
+typedef enum { SINE, SAWTOOTH } wave_t;
 
 /* USER CODE END ET */
 
