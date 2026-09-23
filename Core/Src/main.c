@@ -24,6 +24,7 @@
 #include "i2s.h"
 #include "rng.h"
 #include "tim.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -32,6 +33,7 @@
 #include "keyMatrix.h"
 #include "oscillators.h"
 #include "sinewave.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,10 +70,10 @@ flag gachaFlag = 0;
 
 oscillator_t oscillator[8] = {0};
 
-adsr_t adsr = {ATTACK, 100, 10, 1, 10, 0};
+adsr_t adsr = {ATTACK, 0, 100, 0.5, 100, 0};
 uint8_t voiceCount = ONE_VOICE;
 int8_t detuneCents = 25;
-
+int8_t waveType = SINE;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,7 +95,7 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
   } else {
 
     volatile uint32_t start = DWT->CYCCNT;
-    unisonFill(voiceCount, FIRST_HALF, mainBuff, &adsr, oscillator);
+    unisonFill(voiceCount, FIRST_HALF, mainBuff, &adsr, oscillator, waveType);
     fillSineCycles = DWT->CYCCNT - start;
     if (fillSineCycles > fillSineMaxCycles)
       fillSineMaxCycles = fillSineCycles;
@@ -105,7 +107,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     tetoMode(SECOND_HALF, (int16_t *)mainBuff, oscillator, &adsr);
   } else {
     volatile uint32_t start = DWT->CYCCNT;
-    unisonFill(voiceCount, SECOND_HALF, mainBuff, &adsr, oscillator);
+    unisonFill(voiceCount, SECOND_HALF, mainBuff, &adsr, oscillator, SAWTOOTH);
     fillSineCycles = DWT->CYCCNT - start;
     if (fillSineCycles > fillSineMaxCycles)
       fillSineMaxCycles = fillSineCycles;
@@ -174,6 +176,7 @@ int main(void) {
   MX_TIM7_Init();
   MX_RNG_Init();
   MX_I2C1_Init();
+  MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t *)mainBuff, 512);

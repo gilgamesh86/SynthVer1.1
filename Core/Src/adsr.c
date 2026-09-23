@@ -27,8 +27,7 @@ void adsrEnvStart(flag *adsrTick, adsr_t *adsr, flag *releaseFlag,
         adsr->value -= (1 - adsr->sustain) / (10 * adsr->decay);
         if (adsr->value <= adsr->sustain) {
           adsr->value = adsr->sustain;
-          adsr->state = SUSTAIN; // <-- also: you never transition to SUSTAIN
-                                 // currently, see below
+          adsr->state = SUSTAIN;
         }
       }
       break;
