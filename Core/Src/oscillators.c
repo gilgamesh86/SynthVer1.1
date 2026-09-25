@@ -21,13 +21,13 @@ void unisonFill(voices_t number, position_t half, uint16_t *mainBuff,
       for (uint8_t i = 0; i < (1 << number); i++) {
         for (uint8_t j = 0; j < 128; j++) {
           inputBuffer[j] +=
-              (int32_t)((oscillator[i].accumulator >> 18)) * adsr->value;
+              (int32_t)((oscillator[i].accumulator >> 16)) * adsr->value;
           oscillator[i].accumulator += oscillator[i].step;
         }
       }
       for (uint8_t j = 0; j < 128; j++) {
-        mainBuff[(2 * j) + half] = inputBuffer[j] >> number;
-        mainBuff[(2 * j) + 1 + half] = inputBuffer[j] >> number;
+        mainBuff[(2 * j) + half] = inputBuffer[j] >> (1 + number);
+        mainBuff[(2 * j) + 1 + half] = inputBuffer[j] >> (1 + number);
         inputBuffer[j] = 0;
       }
     }
@@ -35,12 +35,25 @@ void unisonFill(voices_t number, position_t half, uint16_t *mainBuff,
 
   case SINE:
     if (number == ONE_VOICE) {
-      static int16_t index;
+      uint16_t index = 0;
       for (int i = 0; i < 128; i++) {
-        index = oscillator[0].accumulator >> 20;
-        mainBuff[(2 * i) + half] = sineWave[index];
-        mainBuff[(2 * i) + half + 1] = sineWave[index];
+        index = (int16_t)(oscillator[0].accumulator >> 20);
+        mainBuff[(2 * i) + half] = sineWave[index] >> 2;
+        mainBuff[(2 * i) + half + 1] = sineWave[index] >> 2;
         oscillator[0].accumulator += oscillator[0].step;
+      }
+    } else if (number <= EIGHT_VOICE) {
+      int16_t inputBuffer[128] = {0};
+      for (uint8_t i = 0; i < (1 << number); i++) {
+        for (uint8_t j = 0; j < 128; j++) {
+          uint16_t index = (int16_t)(oscillator[i].accumulator >> 20);
+          inputBuffer[j] += (sineWave[index] >> (1 + number));
+          oscillator[i].accumulator += oscillator[i].step;
+        }
+      }
+      for (int i = 0; i < 128; i++) {
+        mainBuff[(2 * i) + half] = inputBuffer[i] * adsr->value;
+        mainBuff[(2 * i) + half + 1] = inputBuffer[i] * adsr->value;
       }
     }
 

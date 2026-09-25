@@ -12,11 +12,6 @@ void delay_us(uint32_t us) {
   }
 }
 
-int _write(int file, char *ptr, int len) {
-  CDC_Transmit_FS((uint8_t *)ptr, len);
-  return len;
-}
-
 const pin_t rows[6] = {{GPIOA, GPIO_PIN_5}, {GPIOA, GPIO_PIN_4},
 
                        {GPIOA, GPIO_PIN_3}, {GPIOA, GPIO_PIN_2},
@@ -39,7 +34,7 @@ const uint32_t phaseTable[8][6] = {
     {23409859, 37160835, 58989149, 93639437, 148643341, 235956596},
 
 };
-#define DEBOUNCE_SAMPLES 20
+#define DEBOUNCE_SAMPLES 10
 uint8_t pressed[8][6] = {0};
 uint8_t prevState[8][6] = {0};
 uint32_t lastKeyTime[8][6] = {0};

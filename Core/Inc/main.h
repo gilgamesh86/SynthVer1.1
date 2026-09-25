@@ -66,6 +66,17 @@ typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
 
 typedef enum { SINE, SAWTOOTH } wave_t;
 
+typedef enum {
+  WAVE_TYPE,
+  UNISON,
+  DETUNE,
+  ATK,
+  DEC,
+  SUS,
+  REL,
+  PADDING
+} uiStates;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

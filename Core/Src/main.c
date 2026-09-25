@@ -33,11 +33,18 @@
 #include "keyMatrix.h"
 #include "oscillators.h"
 #include "sinewave.h"
+#include "ui.h"
+#include "usbd_cdc_if.h"
+#include <stdint.h>
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+int _write(int file, char *ptr, int len) {
+  CDC_Transmit_FS((uint8_t *)ptr, len);
+  return len;
+}
 
 /* USER CODE END PTD */
 
@@ -70,16 +77,21 @@ flag gachaFlag = 0;
 
 oscillator_t oscillator[8] = {0};
 
-adsr_t adsr = {ATTACK, 0, 100, 0.5, 100, 0};
-uint8_t voiceCount = ONE_VOICE;
-int8_t detuneCents = 25;
-int8_t waveType = SINE;
+adsr_t adsr = {ATTACK, 10, 10, 1, 0, 0};
+uint8_t voiceCount = 0;
+int8_t detuneCents = 20;
+int8_t waveType = 0;
+
+volatile uint8_t uiStateCounter = 0;
+volatile int8_t updateState = 0;
+
+volatile int8_t uiState = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
 void blink(void) {
   if (ledFlag == 1) {
     ledFlag = 0;
@@ -107,7 +119,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     tetoMode(SECOND_HALF, (int16_t *)mainBuff, oscillator, &adsr);
   } else {
     volatile uint32_t start = DWT->CYCCNT;
-    unisonFill(voiceCount, SECOND_HALF, mainBuff, &adsr, oscillator, SAWTOOTH);
+    unisonFill(voiceCount, SECOND_HALF, mainBuff, &adsr, oscillator, waveType);
     fillSineCycles = DWT->CYCCNT - start;
     if (fillSineCycles > fillSineMaxCycles)
       fillSineMaxCycles = fillSineCycles;
@@ -125,6 +137,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
   if (htim->Instance == TIM7) {
     ledFlag = 1;
+  }
+}
+
+#define DEBOUNCE_MS 150
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  static uint32_t lastPB5Tick = 0;
+  static uint32_t lastPB6Tick = 0;
+  uint32_t now = HAL_GetTick();
+
+  if (GPIO_Pin == GPIO_PIN_5) {
+    if (now - lastPB5Tick >= DEBOUNCE_MS) {
+      uiStateCounter--;
+      lastPB5Tick = now;
+      updateState = 1;
+    }
+  }
+
+  if (GPIO_Pin == GPIO_PIN_6) {
+    if (now - lastPB6Tick >= DEBOUNCE_MS) {
+      uiStateCounter++;
+      lastPB6Tick = now;
+      updateState = 1;
+    }
   }
 }
 
@@ -175,14 +211,21 @@ int main(void) {
   MX_TIM6_Init();
   MX_TIM7_Init();
   MX_RNG_Init();
-  MX_I2C1_Init();
   MX_USB_Device_Init();
+  MX_TIM1_Init();
+  MX_TIM2_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t *)mainBuff, 512);
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_TIM_Base_Start_IT(&htim6);
   HAL_TIM_Base_Start_IT(&htim7);
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+  displayInit();
+  displayText(TITLE, "Welcome!");
+  displayText(BODY1, "press any button");
+  displayText(BODY2, "to start");
 
   /* USER CODE END 2 */
 
@@ -199,6 +242,112 @@ int main(void) {
 
     scanMatrix(voiceCount, &scan, oscillator, &adsr, detuneCents, &releaseFlag);
 
+    uint8_t uiState = uiStateCounter % 8;
+    uint8_t redraw = 0;
+
+    if (updateState == 1) {
+      redraw = updateState;
+      printf("counter: %d state: %d \r\n", uiStateCounter, uiState);
+      updateState = 0;
+    }
+
+    switch (uiState) {
+    case WAVE_TYPE: {
+      static int8_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        waveType = number & 1;
+        displayClear();
+        displayText(TITLE, "Wavetable");
+        displayText(BODY1, waveType == 0 ? "SINE" : "SAW");
+      }
+      break;
+    }
+    case UNISON: {
+      static int8_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        voiceCount = number & 3;
+        displayClear();
+        displayText(TITLE, "Unison");
+        displayText(BODY1, "Voices: %d", (1 << voiceCount));
+      }
+      break;
+    }
+    case DETUNE: {
+      static int8_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        detuneCents = number;
+        displayClear();
+        displayText(TITLE, "Detune");
+        displayText(BODY1, "cents: %d", detuneCents);
+      }
+      break;
+    }
+    case ATK: {
+
+      static int16_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        adsr.attack = number * 10;
+        displayClear();
+        displayText(TITLE, "Attack");
+        displayText(BODY1, "%d ms", adsr.attack);
+      }
+      break;
+    }
+
+    case DEC: {
+
+      static int16_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        adsr.decay = number * 10;
+        displayClear();
+        displayText(TITLE, "Decay");
+        displayText(BODY1, "%d ms", adsr.decay);
+      }
+      break;
+    }
+
+    case SUS: {
+
+      static int16_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        adsr.sustain = 1.0f - (float)number / 50.0f;
+        int8_t fdosentwork = (int)(adsr.sustain * 100);
+        displayClear();
+        displayText(TITLE, "Sustain");
+        if (fdosentwork == 100) {
+          displayText(BODY1, "1.00", fdosentwork);
+        } else if (fdosentwork < 10) {
+          displayText(BODY1, "0.0%d", fdosentwork);
+        } else {
+          displayText(BODY1, "0.%d", fdosentwork);
+        }
+      }
+      break;
+    }
+
+    case REL: {
+
+      static int16_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        adsr.release = number * 10;
+        displayClear();
+        displayText(TITLE, "Release");
+        displayText(BODY1, "%d ms", adsr.release);
+      }
+      break;
+    }
+    case PADDING: {
+
+      static int16_t number = 0;
+      if (parameterSet(&htim2, &number, PARAM_INT) || redraw == 1) {
+        adsr.release = number * 10;
+        displayClear();
+        displayText(TITLE, "More stuff");
+        displayText(BODY1, "comming soon!!");
+      }
+      break;
+    }
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -262,7 +411,8 @@ void SystemClock_Config(void) {
  */
 void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* User can add his own implementation to report the HAL error return state
+   */
   __disable_irq();
   while (1) {
   }
@@ -281,8 +431,8 @@ void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
 
   /* User can add his own implementation to report the file name and line
-     number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
-     line) */
+     number, ex: printf("Wrong parameters value: file %s on line %d\r\n",
+     file, line) */
 
   /* USER CODE END 6 */
 }

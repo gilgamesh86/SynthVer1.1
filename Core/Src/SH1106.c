@@ -22,8 +22,8 @@
  */
 #include "SH1106.h"
 
-extern I2C_HandleTypeDef hi2c1;
-#define SH1106_I2C &hi2c1
+extern I2C_HandleTypeDef hi2c2;
+#define SH1106_I2C &hi2c2
 
 /* Write command */
 #define SH1106_WRITECOMMAND(command)                                           \
