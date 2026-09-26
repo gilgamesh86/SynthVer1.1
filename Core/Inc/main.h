@@ -62,7 +62,13 @@ typedef struct {
 
 typedef enum { ATTACK, DECAY, SUSTAIN, RELEASE } state_t;
 
-typedef enum { ONE_VOICE, TWO_VOICE, FOUR_VOICE, EIGHT_VOICE } voices_t;
+typedef enum {
+  ONE_VOICE,
+  TWO_VOICE,
+  FOUR_VOICE,
+  EIGHT_VOICE
+} voices_t; // this way so that i can just shift by this numbers to divide
+            // instead of divide
 
 typedef enum { SINE, SAWTOOTH } wave_t;
 
@@ -74,7 +80,7 @@ typedef enum {
   DEC,
   SUS,
   REL,
-  PADDING
+  PADDING // padding cause 8 is good number
 } uiStates;
 
 /* USER CODE END ET */

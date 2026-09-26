@@ -2,6 +2,8 @@
 #include "main.h"
 #include "sinewave.h"
 
+// unsigned integer wraps around, this property is used throughout
+
 void unisonFill(voices_t number, position_t half, uint16_t *mainBuff,
                 adsr_t *adsr, oscillator_t *oscillator, wave_t wave) {
 
@@ -38,8 +40,8 @@ void unisonFill(voices_t number, position_t half, uint16_t *mainBuff,
       uint16_t index = 0;
       for (int i = 0; i < 128; i++) {
         index = (int16_t)(oscillator[0].accumulator >> 20);
-        mainBuff[(2 * i) + half] = sineWave[index] >> 2;
-        mainBuff[(2 * i) + half + 1] = sineWave[index] >> 2;
+        mainBuff[(2 * i) + half] = (sineWave[index] >> 2) * adsr->value;
+        mainBuff[(2 * i) + half + 1] = (sineWave[index] >> 2) * adsr->value;
         oscillator[0].accumulator += oscillator[0].step;
       }
     } else if (number <= EIGHT_VOICE) {
@@ -47,7 +49,7 @@ void unisonFill(voices_t number, position_t half, uint16_t *mainBuff,
       for (uint8_t i = 0; i < (1 << number); i++) {
         for (uint8_t j = 0; j < 128; j++) {
           uint16_t index = (int16_t)(oscillator[i].accumulator >> 20);
-          inputBuffer[j] += (sineWave[index] >> (1 + number));
+          inputBuffer[j] += (sineWave[index] >> (2 + number));
           oscillator[i].accumulator += oscillator[i].step;
         }
       }
